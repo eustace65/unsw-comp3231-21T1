@@ -1,0 +1,81 @@
+By grp229
+
+============================================ Structure Design ============================================
+struct file_info {
+    struct vnode *file_vnode;  // Link to vnode
+    off_t file_offset; // File offset
+    int file_refcount; // reference number of the file
+    int file_flag; // File open mode
+};
+
+struct file_info **of_table; // Global open file table
+
+//************ in Proc.h **************
+struct proc {
+    ...
+    struct file_info **fd_table[OPEN_MAX]; // fd_table for each process
+}
+
+
+We created a global open file table that is shared between processes, and
+file descriptor tables for each process. The file descriptor table stores pointers to
+open file table which stores the pointers to information of opened files.
+Of table and fd tables are intialized in runprogram.c by connecting first three
+fd to stdin, stdout and stderr, and all the functions built in file.c are called
+in in syscall.c. As file lock is not used, a file would be changed concurrently
+by many processes if fork() was implemented. Copyin/out is used to ensure the
+security of pointer using in the kernel space when transferring data to and from
+applications. One of the significant issues surround managing the data structures
+is that open file table would be changed concurrently if there are multiprocesses.
+
+============================================    OPEN    ============================================
+int open_trust(char *filename, int flags, mode_t mode, int *retval);
+int sys_open(userptr_t filename, int flags, mode_t mode,int *retval);
+
+We use sys_open to copyin and check if the file name is valid, then we call open_trust
+to handle the rest of the process. Open_trust is called directly in runprogram.c
+to link console to fd table. We check if there is a free space for the new open file
+and create a file info in the open file table, then we check if there is a free space
+in the file descriptor table for current process and link it to open file table.
+It will return error number if that occurs, and return 0 on success. Fd number is
+stored in *retval as the file handler.
+============================================    CLOSE   ============================================
+int sys_close(int fd, int *retval);
+
+We check if the fd is vaild, and then find if at least 2 reference counts exist
+after sys_open or there is only one to decide whether reducing count number or
+closing the file.
+It will return error number if that occurs, and return 0 on success.
+============================================    READ    ============================================
+ssize_t sys_read(int fd, void *buf, size_t buflen, int *retval);
+
+We first check if the fd is valid first, and then check if the flag is valid. Then
+we use uio_kinit to initialize a uio. After using VOP_READ(vnode,uio), we use copyout
+to read data to buffer.
+It will return error number if that occurs, and return 0 on success. Reading size is
+stored in *retval.
+============================================    WRITE   ============================================
+ssize_t sys_write(int fd, const void *buf, size_t buflen, int *retval);
+
+We first check if the fd is valid first, and then check if the flag is valid
+and use copyin to ensure kernel security. After using uio_kinit to initialize a uio
+we use VOP_WRITE(vnode,uio) to write to file.
+It will return error number if that occurs, and return 0 on success. Writing size is
+stored in *retval.
+============================================    LSEEK   ============================================
+off_t sys_lseek(int fd, off_t pos, int whence, off_t *retval);
+
+We first check if the fd is valid first, and then check if the file is seekable
+by using VOP_ISSEEKABLE. Then we change file offset according to whence and pos.
+If the offset is negative, it will be restored.
+It will return error number if that occurs, and return 0 on success. Current offset is
+stored in *retval.
+============================================    DUP2    ============================================
+int sys_dup2(int oldfd, int newfd, int *retval);
+
+We first check if the fd is valid first, if oldfd is equal to new fd, nothing will
+be changed and function will return 0. If the newfd points to an opened file, then file
+will be closed. The pointer of oldfd will be copied to newfd and reference count
+will plus 1.
+It will return error number if that occurs, and return 0 on success. New file handle is
+stored in *retval.
